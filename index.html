@@ -1,487 +1,6 @@
-<html lang="bs"><head><script>(function() {
-  // Ensure this script is executed only once
-  if (window.firebaseAuthBridgeScriptLoaded) {
-    return;
-  }
-  window.firebaseAuthBridgeScriptLoaded = true;
-
-  let nextTokenPromiseId = 0;
-
-  // Stores { resolve, reject } for ongoing token requests
-  const pendingTokenPromises = {};
-
-  // Listen for messages from the Host Application
-  window.addEventListener('message', function(event) {
-
-    const messageData = event.data;
-
-  if (messageData && messageData.type === 'RESOLVE_NEW_FIREBASE_TOKEN') {
-      const { success, token, error, promiseId } = messageData ?? {};
-      if (pendingTokenPromises[promiseId]) {
-        if (success) {
-          pendingTokenPromises[promiseId].resolve(token);
-        } else {
-          pendingTokenPromises[promiseId].reject(new Error(error || 'Token refresh failed from host.'));
-        }
-        delete pendingTokenPromises[promiseId];
-      }
-    }
-  });
-
-  // Expose a function for the Generated App to request a new Firebase token
-  window.requestNewFirebaseToken = function() {
-    const currentPromiseId = nextTokenPromiseId++;
-    const promise = new Promise((resolve, reject) => {
-      pendingTokenPromises[currentPromiseId] = { resolve, reject };
-    });
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage({
-        type: 'REQUEST_NEW_FIREBASE_TOKEN',
-        promiseId: currentPromiseId
-      }, '*');
-    } else {
-      pendingTokenPromises[currentPromiseId].reject(new Error('No parent window to request token from.'));
-      delete pendingTokenPromises[currentPromiseId];
-    }
-    return promise;
-  };
-})();</script><script>
-let realOriginalGetUserMedia = null;
-if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-  realOriginalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-}
-
-(function() {
-  if (navigator.mediaDevices && navigator.mediaDevices.__proto__) {
-    try {
-      Object.defineProperty(navigator.mediaDevices.__proto__, 'getUserMedia', {
-        get: function() {
-          return undefined; // Or throw an error
-        },
-        configurable: false
-      });
-    } catch (error) {
-      console.error("Error defining prototype getter:", error);
-    }
-  }
-})();
-
-(function() {
-  const pendingMediaResolvers = {};
-  let nextMediaPromiseId = 0;
-
-  function requestMediaPermissions(constraints) {
-    const mediaPromiseId = nextMediaPromiseId++;
-    const promise = new Promise((resolve, reject) => {
-      pendingMediaResolvers[mediaPromiseId] = (granted) => {
-        delete pendingMediaResolvers[mediaPromiseId];
-        resolve(granted);
-      };
-    });
-
-    window.parent.postMessage({
-      type: 'requestMediaPermission',
-      constraints: constraints,
-      promiseId: mediaPromiseId,
-    }, '*');
-
-    return promise;
-  }
-
-  let originalGetUserMedia = realOriginalGetUserMedia;
-
-  function interceptGetUserMedia() {
-    if (navigator.mediaDevices) {
-      Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-        value: function(constraints) {
-          return requestMediaPermissions(constraints).then((granted) => {
-            if (granted) {
-              if (originalGetUserMedia) {
-                return originalGetUserMedia(constraints);
-              } else {
-                throw new Error("Original getUserMedia not available.");
-              }
-            } else {
-              throw new DOMException('Permission denied', 'NotAllowedError');
-            }
-          });
-        },
-        writable: false,
-        configurable: false
-      });
-    }
-  }
-
-  interceptGetUserMedia();
-
-  const observer = new MutationObserver(function(mutationsList, observer) {
-    for (const mutation of mutationsList) {
-      if (mutation.type === 'reconfigured' && mutation.name === 'getUserMedia' && mutation.object === navigator.mediaDevices) {
-        interceptGetUserMedia();
-      } else if (mutation.type === 'attributes' && mutation.attributeName === 'getUserMedia' && mutation.target === navigator.mediaDevices) {
-        interceptGetUserMedia();
-      } else if (mutation.type === 'childList' && mutation.addedNodes) {
-        mutation.addedNodes.forEach(node => {
-          if (node === navigator.mediaDevices) {
-            interceptGetUserMedia();
-          }
-        });
-      }
-    }
-  });
-
-  function interceptSpeechRecognition() {
-    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
-      return;
-    }
-
-    const OriginalSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    const SpeechRecognitionWrapper = function(...args) {
-      const recognizer = new OriginalSpeechRecognition(...args);
-      const originalStart = recognizer.start.bind(recognizer);
-
-      recognizer.start = function() {
-        requestMediaPermissions({ audio: true }).then(granted => {
-          if (granted) {
-            originalStart();
-          } else {
-            const errorEvent = new SpeechRecognitionErrorEvent('error');
-            errorEvent.error = 'not-allowed'; // This is the standard error for permission denial.
-            recognizer.dispatchEvent(errorEvent);
-          }
-        });
-      };
-
-      return recognizer;
-    };
-
-    SpeechRecognitionWrapper.prototype = OriginalSpeechRecognition.prototype;
-    SpeechRecognitionWrapper.prototype.constructor = SpeechRecognitionWrapper;
-
-    if (window.SpeechRecognition) {
-      window.SpeechRecognition = SpeechRecognitionWrapper;
-    }
-    if (window.webkitSpeechRecognition) {
-      window.webkitSpeechRecognition = SpeechRecognitionWrapper;
-    }
-  }
-
-  interceptSpeechRecognition();
-
-  window.addEventListener('message', function(event) {
-    if (event.data) {
-      if (event.data.type === 'resolveMediaPermission') {
-        const { promiseId, granted } = event.data;
-        if (pendingMediaResolvers[promiseId]) {
-          pendingMediaResolvers[promiseId](granted);
-        }
-      }
-    }
-  });
-
-})();</script><script>((function(modelInformation) {
-  const originalFetch = window.fetch;
-  // TODO: b/421908508 - Move these out of the script and match all generative AI model calls.
-  let googleLlmBaseApiUrls = [
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.textModelName + ':streamGenerateContent',
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.textModelName + ':generateContent',
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.imageModelName + ':predict',
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.imageModelName + ':predictLongRunning',
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.imageEditModelName + ':generateContent',
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.videoModelName + ':predict',
-    'https://generativelanguage.googleapis.com/v1beta/models/' + modelInformation.videoModelName + ':predictLongRunning',
-  ];
-  modelInformation.deprecatedTextModelNames.forEach((modelName) => {
-    googleLlmBaseApiUrls.push(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':streamGenerateContent',
-      'https://generativelanguage.googleapis.com/v1beta/models/' + modelName + ':generateContent',
-    );
-  });
-
-  const pendingFetchResolvers = {};
-  let nextPromiseId = 0;
-
-  function handleStringInput(input, optionsArgument) {
-    const actualUrl = input;
-    const fetchCallArgs = [actualUrl, optionsArgument];
-    const effectiveOptions = optionsArgument || {};
-    const bodyForApiKeyCheck = effectiveOptions.body;
-    const bodyForPostMessage = effectiveOptions.body;
-    return { actualUrl, fetchCallArgs, effectiveOptions, bodyForApiKeyCheck, bodyForPostMessage };
-  }
-
-  function handleRequestInput(input, optionsArgument) {
-    const actualUrl = input.url;
-    const fetchCallArgs = [input, optionsArgument];
-    const effectiveOptions = { method: input.method, headers: new Headers(input.headers) };
-    let bodyForApiKeyCheck;
-    let bodyForPostMessage;
-
-    if (optionsArgument) {
-      if (optionsArgument.method) effectiveOptions.method = optionsArgument.method;
-      if (optionsArgument.headers) effectiveOptions.headers = new Headers(optionsArgument.headers);
-      if ('body' in optionsArgument) {
-        bodyForApiKeyCheck = optionsArgument.body;
-        bodyForPostMessage = optionsArgument.body;
-      } else {
-        bodyForApiKeyCheck = undefined;
-        bodyForPostMessage = input.body;
-      }
-    } else {
-      bodyForApiKeyCheck = undefined;
-      bodyForPostMessage = input.body;
-    }
-    return { actualUrl, fetchCallArgs, effectiveOptions, bodyForApiKeyCheck, bodyForPostMessage };
-  }
-
-  window.fetch = function(input, optionsArgument) {
-    let actualUrl;
-    let fetchCallArgs;
-    let effectiveOptions = {};
-    let bodyForApiKeyCheck;
-    let bodyForPostMessage;
-
-    if (typeof input === 'string') {
-      ({actualUrl, fetchCallArgs, effectiveOptions, bodyForApiKeyCheck, bodyForPostMessage} = handleStringInput(input, optionsArgument));
-    } else if (input instanceof Request) {
-      ({actualUrl, fetchCallArgs, effectiveOptions, bodyForApiKeyCheck, bodyForPostMessage} = handleRequestInput(input, optionsArgument));
-    } else {
-      return originalFetch.apply(window, [input, optionsArgument]);
-    }
-
-    effectiveOptions.method = effectiveOptions.method || 'GET';
-    if (!effectiveOptions.headers) {
-      effectiveOptions.headers = new Headers();
-    }
-
-
-    if (typeof actualUrl === 'string' && googleLlmBaseApiUrls.some((url) => actualUrl.startsWith(url))) {
-      let apiKeyIsNull = true;
-
-      const regex = new RegExp("models/([^:]+)");
-      const modelNameMatch = actualUrl.match(regex);
-      const modelName = modelNameMatch ? modelNameMatch[1] : 'unspecified';
-
-
-      try {
-        const urlObject = new URL(actualUrl);  // Use URL object for robust parsing
-        const apiKeyParam = urlObject.searchParams.get('key');
-        if (apiKeyParam) {
-          apiKeyIsNull = false;
-        }
-      } catch (e) {
-        // Continue checks even if URL parsing fails
-      }
-
-      if (apiKeyIsNull && effectiveOptions.headers) {
-        const h = new Headers(effectiveOptions.headers);
-        const apiKeyHeaderValue = h.get('X-API-Key') || h.get('x-api-key');
-        if (apiKeyHeaderValue) {
-          apiKeyIsNull = false;
-          return originalFetch.apply(window, fetchCallArgs);
-        }
-      }
-
-      if (apiKeyIsNull && effectiveOptions.method && ['POST', 'PUT', 'PATCH'].includes(effectiveOptions.method.toUpperCase()) && typeof bodyForApiKeyCheck === 'string') {
-        try {
-          const bodyData = JSON.parse(bodyForApiKeyCheck);
-          if (bodyData && bodyData.apiKey) {
-            apiKeyIsNull = false;
-            return originalFetch.apply(window, fetchCallArgs);
-          }
-        } catch (e) {
-          // Ignore JSON parsing errors
-        }
-      }
-
-      if(apiKeyIsNull) {
-        const promiseId = nextPromiseId++;
-        const promise = new Promise((resolve) => {
-          pendingFetchResolvers[promiseId] = (resolvedResponse) => {
-            delete pendingFetchResolvers[promiseId];
-            resolve(resolvedResponse);
-          };
-        });
-
-        let serializedBodyForPostMessage;
-        if (typeof bodyForPostMessage === 'string' || bodyForPostMessage == null) {
-            serializedBodyForPostMessage = bodyForPostMessage;
-        } else if (bodyForPostMessage instanceof ReadableStream) {
-            serializedBodyForPostMessage = null;
-        } else {
-            try {
-                serializedBodyForPostMessage = JSON.stringify(bodyForPostMessage);
-            } catch (e) {
-                serializedBodyForPostMessage = null;
-            }
-        }
-
-        const messageOptions = {
-            method: effectiveOptions.method,
-            headers: Object.fromEntries(new Headers(effectiveOptions.headers).entries()),
-            body: serializedBodyForPostMessage
-        };
-
-        window.parent.postMessage({
-          type: 'requestFetch',
-          url: actualUrl,
-          modelName: modelName,
-          options: messageOptions,
-          promiseId: promiseId,
-        }, '*');
-
-        return promise;
-      }
-      return originalFetch.apply(window, fetchCallArgs);
-    }
-    return originalFetch.apply(window, fetchCallArgs);
-  };
-
-  window.addEventListener('message', function(event) {
-    if (event.data && event.data.type === 'resolveFetch') {
-      const { promiseId, response } = event.data;
-      if (pendingFetchResolvers[promiseId]) {
-        try {
-          const reconstructedResponse = new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: new Headers(response.headers),
-          });
-          pendingFetchResolvers[promiseId](reconstructedResponse);
-        } catch (error) {
-          pendingFetchResolvers[promiseId](new Response(null, { status: 500, statusText: "Interceptor Response Reconstruction Error" }));
-        }
-      }
-    }
-  });
-
-}))({"textModelName":"gemini-2.5-flash-preview-04-17","imageModelName":"imagen-3.0-generate-002","imageEditModelName":"gemini-2.0-flash-preview-image-generation","videoModelName":"veo-2.0-generate-001","deprecatedTextModelNames":["gemini-2.0-flash"]})</script><script>(function() {
-  const originalConsoleLog = console.log;
-  const originalConsoleError = console.error;
-
-    /**
-   * Normalizes an error event or a promise rejection reason into a structured error object.
-   * @param {*} errorEventOrReason The error object or reason.
-   * @return {object} Structured error data { message, name, stack }.
-   */
-  function getErrorObject(errorEventOrReason) {
-    if (errorEventOrReason instanceof Error) {
-      return {
-        message: errorEventOrReason.message,
-        name: errorEventOrReason.name,
-        stack: errorEventOrReason.stack,
-      };
-    }
-    // Fallback for non-Error objects.
-    try {
-      return {
-        message: JSON.stringify(errorEventOrReason),
-        name: 'UnknownErrorType',
-        stack: null,
-      };
-    } catch (e) {
-      return {
-        message: String(errorEventOrReason),
-        name: 'UnknownErrorTypeNonStringifiable',
-        stack: null,
-      };
-    }
-  }
-
-  /**
-   * Converts an array of arguments (from log/error) into a single string.
-   * Handles Error objects specially to include their message and stack.
-   * @param {Array<*>} args - Arguments passed to console methods.
-   * @return {string} A string representation of the arguments.
-   */
-  function stringifyArgs(args) {
-    return args
-      .map((arg) => {
-        if (arg instanceof Error) {
-          const {message, stack} = arg;
-          return `Error: ${message}${stack ? ('\nStack: ' + stack) : ''}`;
-        }
-        if (typeof arg === 'object' && arg !== null) {
-          try {
-            return JSON.stringify(arg);
-          } catch (error) {
-            return '[Circular Object]';
-          }
-        } else {
-          return String(arg);
-        }
-      })
-      .join(' ');
-  }
-
-  console.log = function(...args) {
-    const logString = stringifyArgs(args);
-    window.parent.postMessage({ type: 'log', message: logString }, '*');
-    originalConsoleLog.apply(console, args);
-  };
-
-  console.error = function(...args) {
-    let errorData;
-    if (args.length > 0 && args[0] instanceof Error) {
-      const err = args[0];
-      // If the first arg is an Error, capture its details.
-      errorData = {
-        type: 'error',
-        source: 'CONSOLE_ERROR',
-        ...getErrorObject(err),
-        rawArgsString: stringifyArgs(args.slice(1)),
-        timestamp: new Date().toISOString(),
-      };
-    } else {
-      // If not an Error object, treat all args as a general error message.
-      errorData = {
-        type: 'error',
-        source: 'CONSOLE_ERROR',
-        message: stringifyArgs(args),
-        name: 'ConsoleLoggedError',
-        stack: null,
-        timestamp: new Date().toISOString(),
-      };
-    }
-    window.parent.postMessage(errorData, '*');
-    originalConsoleError.apply(console, args);
-  };
-
-  // Listen for global unhandled synchronous errors.
-  window.addEventListener('error', function(event) {
-    const errorDetails = event.error ? getErrorObject(event.error) : {
-      message: event.message,
-      name: 'GlobalError',
-      stack: null,
-      filename: event.filename,
-      lineno: event.lineno,
-      colno: event.colno,
-    };
-
-    window.parent.postMessage({
-      type: 'error',
-      source: 'global',
-      ...errorDetails,
-      message: errorDetails.message || event.message,
-      timestamp: new Date().toISOString(),
-    }, '*');
-  });
-
-  // Listen for unhandled promise rejections (asynchronous errors).
-  window.addEventListener('unhandledrejection', function(event) {
-    const errorDetails = getErrorObject(event.reason);
-
-    window.parent.postMessage({
-      type: 'error',
-      source: 'unhandledrejection',
-      ...errorDetails,
-      message: errorDetails.message || 'Unhandled Promise Rejection',
-      timestamp: new Date().toISOString(),
-    }, '*');
-  });
-
-})();</script>
+<!DOCTYPE html>
+<html lang="bs">
+<head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vodič za Putovanje</title>
@@ -491,7 +10,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         
         body {
             font-family: 'Noto Sans', sans-serif;
-            background-color: #fdfaf6;
+            background-color: #fdfaf6; /* A softer, warmer background */
         }
 
         .header-title {
@@ -515,12 +34,12 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         .details {
             max-height: 0;
             overflow: hidden;
-            transition: max-height 0.6s ease-in-out;
+            transition: max-height 0.8s ease-in-out;
             padding: 0 1.5rem;
         }
 
         .details.show {
-            max-height: 600px;
+            max-height: 800px; /* Increased for more content */
         }
 
         .icon {
@@ -529,39 +48,29 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         }
 
         .highlight-box {
-            background-color: #f1f5f9;
+            background-color: #f0f9ff; /* A soft sky blue */
             border-radius: 1rem;
             padding: 1rem;
+            border: 1px solid #e0f2fe;
+        }
+
+        .info-box {
+             background-color: #fffbeb; /* A soft yellow */
+             border-left: 4px solid #facc15; /* Amber border */
+             padding: 1rem;
+             border-radius: 0.5rem;
         }
         
         .final-card {
-            background: linear-gradient(135deg, #fecaca, #fbcfe8);
-            color: #881337;
-        }
-
-        .export-button {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background-color: #1d4ed8;
-            color: white;
-            padding: 12px 20px;
-            border-radius: 9999px;
-            box-shadow: 0 4px 14px 0 rgba(0, 0, 0, 0.25);
-            font-weight: bold;
-            cursor: pointer;
-            transition: background-color 0.3s;
-            z-index: 1000;
-        }
-        .export-button:hover {
-            background-color: #2563eb;
+            background: linear-gradient(135deg, #fecaca, #fbcfe8); /* Soft pink-red gradient */
+            color: #881337; /* Deep rose text color */
         }
 
     </style>
-<style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }::backdrop{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }/* ! tailwindcss v3.4.16 | MIT License | https://tailwindcss.com */*,::after,::before{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}::after,::before{--tw-content:''}:host,html{line-height:1.5;-webkit-text-size-adjust:100%;-moz-tab-size:4;tab-size:4;font-family:ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";font-feature-settings:normal;font-variation-settings:normal;-webkit-tap-highlight-color:transparent}body{margin:0;line-height:inherit}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,pre,samp{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-feature-settings:normal;font-variation-settings:normal;font-size:1em}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}button,input,optgroup,select,textarea{font-family:inherit;font-feature-settings:inherit;font-variation-settings:inherit;font-size:100%;font-weight:inherit;line-height:inherit;letter-spacing:inherit;color:inherit;margin:0;padding:0}button,select{text-transform:none}button,input:where([type=button]),input:where([type=reset]),input:where([type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}:-moz-focusring{outline:auto}:-moz-ui-invalid{box-shadow:none}progress{vertical-align:baseline}::-webkit-inner-spin-button,::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}summary{display:list-item}blockquote,dd,dl,figure,h1,h2,h3,h4,h5,h6,hr,p,pre{margin:0}fieldset{margin:0;padding:0}legend{padding:0}menu,ol,ul{list-style:none;margin:0;padding:0}dialog{padding:0}textarea{resize:vertical}input::placeholder,textarea::placeholder{opacity:1;color:#9ca3af}[role=button],button{cursor:pointer}:disabled{cursor:default}audio,canvas,embed,iframe,img,object,svg,video{display:block;vertical-align:middle}img,video{max-width:100%;height:auto}[hidden]:where(:not([hidden=until-found])){display:none}.container{width:100%}@media (min-width: 640px){.container{max-width:640px}}@media (min-width: 768px){.container{max-width:768px}}@media (min-width: 1024px){.container{max-width:1024px}}@media (min-width: 1280px){.container{max-width:1280px}}@media (min-width: 1536px){.container{max-width:1536px}}.col-span-1{grid-column:span 1 / span 1}.mx-auto{margin-left:auto;margin-right:auto}.mb-10{margin-bottom:2.5rem}.mb-2{margin-bottom:0.5rem}.mb-3{margin-bottom:0.75rem}.mb-4{margin-bottom:1rem}.ml-4{margin-left:1rem}.ml-6{margin-left:1.5rem}.mt-16{margin-top:4rem}.mt-2{margin-top:0.5rem}.mt-4{margin-top:1rem}.flex{display:flex}.grid{display:grid}.max-w-4xl{max-width:56rem}.max-w-md{max-width:28rem}.list-inside{list-style-position:inside}.list-decimal{list-style-type:decimal}.grid-cols-1{grid-template-columns:repeat(1, minmax(0, 1fr))}.flex-col{flex-direction:column}.items-center{align-items:center}.justify-center{justify-content:center}.gap-6{gap:1.5rem}.space-y-3 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(0.75rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(0.75rem * var(--tw-space-y-reverse))}.space-y-4 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1rem * var(--tw-space-y-reverse))}.p-4{padding:1rem}.p-6{padding:1.5rem}.p-8{padding:2rem}.pb-24{padding-bottom:6rem}.text-center{text-align:center}.text-2xl{font-size:1.5rem;line-height:2rem}.text-3xl{font-size:1.875rem;line-height:2.25rem}.text-4xl{font-size:2.25rem;line-height:2.5rem}.text-5xl{font-size:3rem;line-height:1}.text-6xl{font-size:3.75rem;line-height:1}.text-base{font-size:1rem;line-height:1.5rem}.text-lg{font-size:1.125rem;line-height:1.75rem}.text-xl{font-size:1.25rem;line-height:1.75rem}.font-bold{font-weight:700}.text-blue-600{--tw-text-opacity:1;color:rgb(37 99 235 / var(--tw-text-opacity, 1))}.text-gray-500{--tw-text-opacity:1;color:rgb(107 114 128 / var(--tw-text-opacity, 1))}.text-gray-600{--tw-text-opacity:1;color:rgb(75 85 99 / var(--tw-text-opacity, 1))}.text-gray-700{--tw-text-opacity:1;color:rgb(55 65 81 / var(--tw-text-opacity, 1))}.text-gray-800{--tw-text-opacity:1;color:rgb(31 41 55 / var(--tw-text-opacity, 1))}.text-rose-600{--tw-text-opacity:1;color:rgb(225 29 72 / var(--tw-text-opacity, 1))}@media (min-width: 768px){.md\:col-span-2{grid-column:span 2 / span 2}.md\:mb-16{margin-bottom:4rem}.md\:grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr))}.md\:gap-8{gap:2rem}.md\:p-8{padding:2rem}.md\:text-2xl{font-size:1.5rem;line-height:2rem}.md\:text-6xl{font-size:3.75rem;line-height:1}}</style></head>
+</head>
 <body class="text-gray-800">
 
-    <div class="container mx-auto p-4 md:p-8 max-w-4xl pb-24">
+    <div class="container mx-auto p-4 md:p-8 max-w-4xl">
 
         <!-- Header -->
         <header class="text-center mb-10 md:mb-16">
@@ -570,7 +79,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         </header>
 
         <!-- Main Content Grid -->
-        <main class="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8">
+        <main class="space-y-6 md:space-y-8">
 
             <!-- Flight Details Card -->
             <div class="card interactive-card" role="button" tabindex="0">
@@ -594,59 +103,79 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                 </div>
             </div>
 
-            <!-- Baggage Card -->
+            <!-- THE MOST IMPORTANT STEP Card -->
+            <div class="card interactive-card" role="button" tabindex="0">
+                <div class="p-6">
+                    <div class="flex items-center">
+                        <div class="icon">🎟️</div>
+                        <h2 class="ml-4 text-2xl font-bold">2. Najvažniji Korak: Karta za Avion</h2>
+                    </div>
+                    <div class="details mt-4 text-lg space-y-4">
+                        <p class="text-gray-600">Ovo je malo drugačije nego sa Wizzairom, ali je vrlo jednostavno. Ne trebaš imati odštampanu kartu od mene.</p>
+                        <div class="info-box">
+                            <h3 class="font-bold text-xl mb-2">Tvoj jedini zadatak:</h3>
+                            <ol class="list-decimal list-inside space-y-2">
+                                <li>Kada dođeš na aerodrom, idi pravo na **Ryanair šalter**.</li>
+                                <li>Daj im svoj **pasoš**.</li>
+                                <li>Oni će ti **besplatno odštampati** tvoju pravu kartu za avion (boarding pass).</li>
+                            </ol>
+                            <p class="mt-3 text-sm text-gray-500">To je posebno pravilo Ryanaira za putnike sa našim pasošem, i zato je najlakše da oni to urade za tebe.</p>
+                        </div>
+                        <p>Ta karta koju dobiješ na šalteru je sve što ti treba da uđeš u avion. Jednostavno, zar ne?</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Baggage & Seat Card -->
             <div class="card interactive-card" role="button" tabindex="0">
                 <div class="p-6">
                     <div class="flex items-center">
                         <div class="icon">👜</div>
-                        <h2 class="ml-4 text-2xl font-bold">2. Tvoja Prtljaga</h2>
+                        <h2 class="ml-4 text-2xl font-bold">3. Prtljaga i Sjedište</h2>
                     </div>
                     <div class="details space-y-4 mt-4 text-lg">
                         <div>
                             <h3 class="font-bold">Mala ručna torba:</h3>
-                            <p class="text-gray-600">Jedna manja torba ili ranac koji mora stati ispod sjedišta ispred tebe.</p>
+                            <p class="text-gray-600">Jedna manja torba ili ranac koji nosiš sa sobom u avion.</p>
                         </div>
                         <div>
-                            <h3 class="font-bold">Velika torba (20 kg):</h3>
-                            <p class="text-gray-600">Jedna torba do 20 kg koju predaješ na šalteru. Ona ide u avion posebno.</p>
+                            <h3 class="font-bold">Velika torba za predaju:</h3>
+                            <p class="text-gray-600">Jedna torba do 20 kg koju predaješ na istom šalteru gdje uzimaš kartu.</p>
+                        </div>
+                        <div class="highlight-box mt-4 text-center">
+                            <p class="text-gray-500">Tvoje sjedište je:</p>
+                            <p class="text-6xl font-bold text-blue-600">02A</p>
+                            <p class="text-xl text-gray-500">Do prozora, sasvim naprijed!</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Seat Card -->
-            <div class="card col-span-1 md:col-span-2">
-                 <div class="p-6 flex items-center justify-center text-center">
-                    <div class="icon">💺</div>
-                    <div class="ml-6">
-                        <h2 class="text-2xl font-bold">3. Tvoje Sjedište u Avionu</h2>
-                        <p class="text-6xl font-bold text-blue-600 mt-2">02A</p>
-                        <p class="text-xl text-gray-500">Sjedište do prozora, naprijed u avionu.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- At the Airport in Sarajevo Card -->
-            <div class="card interactive-card col-span-1 md:col-span-2" role="button" tabindex="0">
+            <!-- Help Card -->
+            <div class="card interactive-card" role="button" tabindex="0">
                 <div class="p-6">
                     <div class="flex items-center">
-                        <div class="icon">🏢</div>
-                        <h2 class="ml-4 text-2xl font-bold">4. Na Aerodromu u Sarajevu</h2>
+                        <div class="icon">🆘</div>
+                        <h2 class="ml-4 text-2xl font-bold">4. Ako te neko nešto pita</h2>
                     </div>
-                    <div class="details mt-4 text-lg">
-                        <ol class="list-decimal list-inside space-y-3">
-                            <li><strong>Dođi ranije:</strong> Najbolje je da budeš na aerodromu oko 12:00.</li>
-                            <li><strong>Pronađi Ryanair šalter:</strong> Tamo ćeš predati veliku torbu i pokazati pasoš.</li>
-                            <li><strong>Besplatna prijava:</strong> Tvoja karta ("Plus Fare") uključuje besplatnu prijavu na aerodromu, ne moraš ništa platiti.</li>
-                            <li><strong>Sigurnosna kontrola:</strong> Nakon prijave, prati znakove za sigurnosnu kontrolu ("Security Check").</li>
-                            <li><strong>Pronađi izlaz (Gate):</strong> Na velikom ekranu pronađi svoj let (FR3697 za Göteborg) da vidiš broj izlaza.</li>
-                        </ol>
+                    <div class="details mt-4 text-lg space-y-4">
+                        <p class="text-gray-600">Ako ti priđe neko od osoblja i nešto te pita, a ti ne razumiješ, bez brige. Samo im pokaži ovu karticu na telefonu.</p>
+                        
+                        <div class="p-4 border rounded-xl">
+                            <h3 class="font-bold mb-2 text-rose-600">Information in English:</h3>
+                            <p class="text-base">Hello! This passenger is my grandmother and she only speaks Bosnian. She is travelling to Gothenburg (flight FR3697) to visit her family. Her grandson (me, Amer) and her daughter are waiting for her at the arrival gate. All her documents are in order. If there are any issues, please contact her grandson Amer. Thank you for your help!</p>
+                        </div>
+
+                        <div class="p-4 border rounded-xl">
+                            <h3 class="font-bold mb-2 text-rose-600">Information på svenska:</h3>
+                            <p class="text-base">Hej! Den här passageraren är min mormor och hon talar endast bosniska. Hon reser till Göteborg (flyg FR3697) för att hälsa på sin familj. Hennes barnbarn (jag, Amer) och hennes dotter väntar på henne vid ankomsthallen. Alla hennes dokument är i sin ordning. Om det skulle vara några problem, vänligen kontakta hennes barnbarn Amer. Tack för er hjälp!</p>
+                        </div>
                     </div>
                 </div>
             </div>
             
             <!-- After Landing Card -->
-            <div class="card interactive-card col-span-1 md:col-span-2" role="button" tabindex="0">
+            <div class="card interactive-card" role="button" tabindex="0">
                 <div class="p-6">
                     <div class="flex items-center">
                         <div class="icon">🛬</div>
@@ -654,8 +183,8 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                     </div>
                     <div class="details mt-4 text-lg">
                         <ol class="list-decimal list-inside space-y-4">
-                            <li><strong>Pasoška kontrola:</strong> Prvo ideš na kontrolu pasoša. Samo pokaži svoj pasoš.</li>
-                            <li><strong>Preuzimanje prtljage:</strong> Prati znakove za "Baggage Claim". Na ekranu pronađi svoj let (FR3697 from Sarajevo) da vidiš na kojoj traci je tvoja velika torba.</li>
+                            <li><strong>Pasoška kontrola:</strong> Prati druge putnike do kontrole pasoša. Samo pokaži svoj pasoš.</li>
+                            <li><strong>Preuzimanje prtljage:</strong> Nakon toga, prati znakove za "Baggage Claim". Na ekranu pronađi svoj let (FR3697 from Sarajevo) da vidiš na kojoj traci je tvoja velika torba.</li>
                             <li><strong>Kreni prema izlazu:</strong> Kada uzmeš torbu, samo prati znakove za "Izlaz" / "Exit".</li>
                         </ol>
                     </div>
@@ -663,12 +192,12 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
             </div>
 
             <!-- We are waiting for you! Card -->
-            <div class="card col-span-1 md:col-span-2 final-card">
+            <div class="card final-card">
                  <div class="p-8 flex flex-col items-center justify-center text-center">
                     <div class="text-5xl mb-4">❤️</div>
                     <h2 class="text-3xl font-bold mb-2">Čekamo te!</h2>
                     <p class="text-xl max-w-md">
-                        Ja i Annie te čekamo odmah ispred izlaza. Ne brini ništa, samo polako. Jedva čekamo da nam budeš u zagrljaju!
+                        Ja, Annie i Dino te čekamo odmah ispred izlaza. Ne brini ništa, samo polako. Jedva čekamo da nam budeš u zagrljaju!
                     </p>
                 </div>
             </div>
@@ -676,13 +205,10 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         </main>
 
         <footer class="text-center mt-16 text-gray-500">
-            <p>S ljubavlju, tvoji Amer i Annie.</p>
+            <p>S ljubavlju, tvoji Amer, Annie i Dino.</p>
         </footer>
 
     </div>
-
-    <!-- Export Button -->
-    
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -720,38 +246,8 @@ if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
                     }
                 });
             });
-
-            // --- EXPORT FUNCTIONALITY ---
-            const exportBtn = document.getElementById('exportBtn');
-            exportBtn.addEventListener('click', () => {
-                // Klona hela HTML-dokumentet för att kunna manipulera det utan att förstöra den nuvarande sidan
-                const clonedDoc = document.documentElement.cloneNode(true);
-                
-                // Ta bort export-knappen och script-taggen från den klonade versionen
-                const scriptToRemove = clonedDoc.querySelector('script'); // Tar bort det första scriptet, vilket är vårt interaktions-script
-                const buttonToRemove = clonedDoc.querySelector('#exportBtn');
-                
-                if(scriptToRemove) scriptToRemove.parentNode.removeChild(scriptToRemove);
-                if(buttonToRemove) buttonToRemove.parentNode.removeChild(buttonToRemove);
-
-                // Skapa en blob (en fil-liknande objekt) från den rensade HTML-koden
-                const blob = new Blob([clonedDoc.outerHTML], { type: 'text/html' });
-                const url = URL.createObjectURL(blob);
-                
-                // Skapa en temporär länk för att ladda ner filen
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'putni-vodic.html'; // Filnamnet blir "putni-vodic.html"
-                document.body.appendChild(a);
-a.click();
-                
-                // Städa upp efteråt
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            });
         });
     </script>
 
-
-
-</body></html>
+</body>
+</html>
