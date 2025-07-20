@@ -39,7 +39,14 @@
         }
 
         .details.show {
-            max-height: 800px; /* Increased for more content */
+            max-height: 90vh; /* Changed to viewport height for flexibility */
+        }
+
+        /* NEW CSS FOR THE SCROLLABLE CONTENT */
+        .scrollable-content {
+            max-height: 400px; /* Max height before scrolling starts */
+            overflow-y: auto;  /* Add vertical scrollbar ONLY if needed */
+            padding-right: 8px; /* Add some space for the scrollbar */
         }
 
         .icon {
@@ -158,17 +165,20 @@
                         <div class="icon">🆘</div>
                         <h2 class="ml-4 text-2xl font-bold">4. Ako te neko nešto pita</h2>
                     </div>
-                    <div class="details mt-4 text-lg space-y-4">
-                        <p class="text-gray-600">Ako ti priđe neko od osoblja i nešto te pita, a ti ne razumiješ, bez brige. Samo im pokaži ovu karticu na telefonu.</p>
-                        
-                        <div class="p-4 border rounded-xl">
-                            <h3 class="font-bold mb-2 text-rose-600">Information in English:</h3>
-                            <p class="text-base">Hello! This passenger is my grandmother and she only speaks Bosnian. She is travelling to Gothenburg (flight FR3697) to visit her family. Her grandson (me, Amer) and her daughter are waiting for her at the arrival gate. All her documents are in order. If there are any issues, please contact her grandson Amer. Thank you for your help!</p>
-                        </div>
+                    <div class="details mt-4 text-lg">
+                        <div class="scrollable-content space-y-4">
+                            <p class="text-gray-600 pr-2">Ako ti priđe neko od osoblja i nešto te pita, a ti ne razumiješ, bez brige. Samo im pokaži ovu karticu na telefonu.</p>
+                            
+                            <!-- SWAPPED ORDER: SWEDISH FIRST -->
+                            <div class="p-4 border rounded-xl mr-2">
+                                <h3 class="font-bold mb-2 text-rose-600">Information på svenska:</h3>
+                                <p class="text-base">Hej! Den här passageraren är min mormor och hon talar endast bosniska. Hon reser till Göteborg (flyg FR3697) för att hälsa på sin familj. Hennes barnbarn (Amer), hans bror (Dino) och hennes dotter väntar på henne vid ankomsthallen. Alla hennes dokument är i sin ordning. Om det skulle vara några problem, vänligen kontakta hennes barnbarn Amer. Tack för er hjälp!</p>
+                            </div>
 
-                        <div class="p-4 border rounded-xl">
-                            <h3 class="font-bold mb-2 text-rose-600">Information på svenska:</h3>
-                            <p class="text-base">Hej! Den här passageraren är min mormor och hon talar endast bosniska. Hon reser till Göteborg (flyg FR3697) för att hälsa på sin familj. Hennes barnbarn (jag, Amer) och hennes dotter väntar på henne vid ankomsthallen. Alla hennes dokument är i sin ordning. Om det skulle vara några problem, vänligen kontakta hennes barnbarn Amer. Tack för er hjälp!</p>
+                            <div class="p-4 border rounded-xl mr-2">
+                                <h3 class="font-bold mb-2 text-rose-600">Information in English:</h3>
+                                <p class="text-base">Hello! This passenger is my grandmother and she only speaks Bosnian. She is travelling to Gothenburg (flight FR3697) to visit her family. Her grandson (Amer), his brother (Dino) and her daughter are waiting for her at the arrival gate. All her documents are in order. If there are any issues, please contact her grandson Amer. Thank you for your help!</p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -251,3 +261,4 @@
 
 </body>
 </html>
+
